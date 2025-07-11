@@ -5,6 +5,8 @@
 
 #define FRONTEND 1
 
+#define PG_CONTROL_FILE_PATH_SIZE		8192
+
 #include "postgres.h"
 
 #include <dirent.h>
@@ -25,6 +27,7 @@
 
 static void usage(void);
 static bool read_controlfile(const char*);
+static void	make_datadir_out_if_not_exists(const char*);
 
 static const char *progname;
 static ControlFileData ControlFile; /* pg_control values */
@@ -322,6 +325,8 @@ main(int argc, char *argv[])
 	if (set_wal_segsize != 0)
 		ControlFile.xlog_seg_size = WalSegSz;
 
+	make_datadir_out_if_not_exists(DataDirOut);
+
 	update_controlfile(DataDirOut, &ControlFile, false);
 	return 0;
 }
@@ -338,12 +343,11 @@ read_controlfile(const char* pgdata_in)
 {
 	int			fd;
 	int			len;
-#define PG_CONTROL_FILE_PATH_SIZE		8192
-	char	    filepath[PG_CONTROL_FILE_PATH_SIZE];
+	char	    filepath[PG_CONTROL_FILE_PATH_SIZE] = {0};
 	char	    *buffer;
 	pg_crc32c	crc;
 
-	sprintf(filepath, "%s/%s", pgdata_in, XLOG_CONTROL_FILE);
+	snprintf(filepath, PG_CONTROL_FILE_PATH_SIZE - 1, "%s/%s", pgdata_in, XLOG_CONTROL_FILE);
 
 
 	if ((fd = open(filepath, O_RDONLY | PG_BINARY, 0)) < 0)
@@ -405,6 +409,43 @@ read_controlfile(const char* pgdata_in)
 	/* Looks like it's a mess. */
 	pg_log_warning("pg_control exists but is broken or wrong version; ignoring it");
 	return false;
+}
+
+
+static void
+make_datadir_out_if_not_exists(const char* pgdata_out)
+{
+	char filepath[PG_CONTROL_FILE_PATH_SIZE] = {0};
+	int fd;
+
+	if (mkdir(pgdata_out, 0755)) {
+		if (errno != EEXIST) {
+			pg_log_error("output pgdata \"%s\" doesn't exists and cannot mkdir: %m",
+		                 pgdata_out);
+			exit(1);
+		}
+	}
+
+	snprintf(filepath, PG_CONTROL_FILE_PATH_SIZE - 1, "%s/global", pgdata_out);
+	if (mkdir(filepath, 0755)) {
+		if (errno != EEXIST) {
+			pg_log_error("directory \"%s\" doesn't exists and cannot mkdir: %m",
+			             filepath);
+			exit(1);
+		}
+	}
+
+	snprintf(filepath, PG_CONTROL_FILE_PATH_SIZE - 1, "%s/%s",
+	         pgdata_out, XLOG_CONTROL_FILE);
+	if ((fd = open(filepath, O_EXCL | O_CREAT, 0644)) == -1) {
+		if (errno != EEXIST) {
+			pg_log_error("file \"%s\" doesn't exists and cannot create: %m",
+			             filepath);
+			exit(1);
+		}
+	} else {
+		close(fd);
+	}
 }
 
 
